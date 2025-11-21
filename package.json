@@ -1,7 +1,7 @@
 {
   "name": "discord-music-bot",
   "version": "1.0.0",
-  "description": "Discord music bot with express server for Render",
+  "description": "Discord music bot with express + play-dl",
   "main": "index.js",
   "scripts": {
     "start": "node index.js",
