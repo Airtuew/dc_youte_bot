@@ -1,19 +1,15 @@
-Something unexpected ocurred during the execution
--# If the problem persists, [report the issue](https://discord.gg/damdSygUGA){
+{
   "name": "discord-music-bot",
   "version": "1.0.0",
-  "description": "Discord bot that plays YouTube audio",
+  "description": "A simple Discord music bot using discord.js v14 and ytdl-core",
   "main": "index.js",
-  "engines": {
-    "node": ">=18"
-  },
   "scripts": {
     "start": "node index.js"
   },
   "dependencies": {
-    "discord.js": "^14.11.0",
+    "@discordjs/opus": "^0.9.0",
+    "discord.js": "^14.14.1",
     "@discordjs/voice": "^0.16.0",
-    "play-dl": "^1.10.0",
-    "dotenv": "^16.0.0"
+    "ytdl-core": "^4.11.5"
   }
 }
