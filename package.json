@@ -1,17 +1,21 @@
 {
   "name": "discord-music-bot",
   "version": "1.0.0",
-  "description": "A simple Discord music bot using discord.js v14 and ytdl-core",
+  "description": "Discord music bot with express server for Render",
   "main": "index.js",
   "scripts": {
-    "start": "node index.js"
+    "start": "node index.js",
+    "dev": "nodemon index.js"
+  },
+  "engines": {
+    "node": "18.x"
   },
   "dependencies": {
-    "@discordjs/opus": "^0.9.0",
     "discord.js": "^14.14.1",
     "@discordjs/voice": "^0.16.0",
-    "ytdl-core": "^4.11.5",
+    "@discordjs/opus": "^0.9.0",
+    "play-dl": "^1.9.7",
     "dotenv": "^16.4.5",
-    "play-dl": "^1.9.7"
+    "express": "^4.18.2"
   }
 }
