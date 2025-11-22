@@ -1,4 +1,4 @@
-// index.js - 最終穩定版 (Express keep-alive + robust interaction handling)
+// index.js - 修正版（修正 Ephemeral、join 超時、encryption fallback）
 require('dotenv').config();
 const express = require('express');
 const {
@@ -7,7 +7,6 @@ const {
   REST,
   Routes,
   SlashCommandBuilder,
-  InteractionResponseFlags,
 } = require('discord.js');
 const {
   joinVoiceChannel,
@@ -40,17 +39,17 @@ if (process.env.YOUTUBE_COOKIES) {
   }
 }
 
-// --- Express keep-alive for Render ---
+// Express keep-alive
 const app = express();
 app.get('/', (req, res) => res.send('Bot is running.'));
 app.listen(PORT, () => console.log(`🌐 Express listening on port ${PORT}`));
 
-// --- Discord client ---
+// Discord client
 const client = new Client({
   intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildVoiceStates],
 });
 
-// queues per guild
+// queue per guild
 const queues = new Map();
 function getOrCreateQueue(gid) {
   if (!queues.has(gid)) {
@@ -63,7 +62,7 @@ function getOrCreateQueue(gid) {
   return queues.get(gid);
 }
 
-// play next helper with basic retry
+// play next song with retry
 async function playNext(gid) {
   const q = queues.get(gid);
   if (!q) return;
@@ -85,45 +84,73 @@ async function playNext(gid) {
       return;
     } catch (err) {
       console.error(`播放 ${track.url} 失敗 (attempt ${attempt})`, err);
-      if (attempt === 2) {
-        // skip and continue
-        continue;
-      }
-      await new Promise((r) => setTimeout(r, 800));
+      if (attempt < 2) await new Promise((r) => setTimeout(r, 800));
     }
   }
-  // if both attempts fail, continue with next
+  // both attempts failed -> continue to next
   playNext(gid);
 }
 
-// connect & subscribe (with encryption mode)
+// connect & play with robust fallback for encryption/join issues
 async function connectAndPlay(interaction, voiceChannel) {
   const gid = interaction.guildId;
   const q = getOrCreateQueue(gid);
 
-  // choose encryption mode supported by modern Discord servers
-  const encryptionMode = 'aead_xchacha20_poly1305_rtpsize';
+  // helper to attempt join with options and timeout handling
+  async function attemptJoin(options) {
+    const connection = joinVoiceChannel(options);
+    try {
+      // increase wait to 30s to reduce AbortError on slow envs
+      await entersState(connection, VoiceConnectionStatus.Ready, 30000);
+      return connection;
+    } catch (err) {
+      try { connection.destroy(); } catch (e) {}
+      throw err;
+    }
+  }
 
-  const connection = joinVoiceChannel({
+  // base options (no explicit encryption)
+  const baseOptions = {
     channelId: voiceChannel.id,
     guildId: voiceChannel.guild.id,
     adapterCreator: voiceChannel.guild.voiceAdapterCreator,
     selfDeaf: false,
     selfMute: false,
-    encryption: { mode: encryptionMode },
-  });
+  };
 
+  // try sequence:
+  // 1) default join (let library choose mode)
+  // 2) if fails with encryption mode error, try explicit mode
+  // 3) if still fails, rethrow so caller can handle
   try {
-    await entersState(connection, VoiceConnectionStatus.Ready, 15_000);
+    const conn = await attemptJoin(baseOptions);
+    conn.subscribe(q.player);
+    return;
   } catch (err) {
-    connection.destroy();
+    // if error message mentions encryption modes, try explicit fallback
+    const msg = (err && err.message) ? err.message : '';
+    console.warn('第一次 join 失敗，檢查是否為 encryption mode 問題：', msg);
+
+    // possible explicit modes to try (order: xchacha, aes256)
+    const modes = ['aead_xchacha20_poly1305_rtpsize', 'aead_aes256_gcm_rtpsize'];
+    for (const mode of modes) {
+      try {
+        console.log(`嘗試使用指定 encryption mode = ${mode}`);
+        const conn = await attemptJoin({ ...baseOptions, encryption: { mode } });
+        conn.subscribe(q.player);
+        return;
+      } catch (e2) {
+        console.warn(`使用 mode=${mode} 失敗：`, e2 && e2.message ? e2.message : e2);
+        // continue to next mode
+      }
+    }
+
+    // all attempts failed -> rethrow original (or last) error
     throw err;
   }
-
-  connection.subscribe(q.player);
 }
 
-// --- Slash commands definition ---
+// slash commands
 const commands = [
   new SlashCommandBuilder().setName('join').setDescription('讓機器人加入語音頻道'),
   new SlashCommandBuilder().setName('leave').setDescription('讓機器人離開語音頻道'),
@@ -152,7 +179,7 @@ async function registerCommands() {
   }
 }
 
-// --- Interaction handler (robust, avoids timeouts) ---
+// interaction handler
 client.on('interactionCreate', async (interaction) => {
   if (!interaction.isChatInputCommand()) return;
 
@@ -160,11 +187,11 @@ client.on('interactionCreate', async (interaction) => {
   const q = getOrCreateQueue(gid);
 
   try {
-    // ---- JOIN ----
+    // JOIN
     if (interaction.commandName === 'join') {
       const vc = interaction.member?.voice?.channel;
       if (!vc) {
-        return await interaction.reply({ content: '❗ 請先加入語音頻道。', flags: InteractionResponseFlags.Ephemeral });
+        return await interaction.reply({ content: '❗ 請先加入語音頻道。', ephemeral: true });
       }
 
       try {
@@ -172,11 +199,12 @@ client.on('interactionCreate', async (interaction) => {
         return await interaction.reply({ content: '✅ 已加入語音頻道。' });
       } catch (e) {
         console.error('join 失敗', e);
-        return await interaction.reply({ content: '❌ 無法加入語音頻道（請檢查權限/頻道）', flags: InteractionResponseFlags.Ephemeral });
+        // give helpful error to user
+        return await interaction.reply({ content: '❌ 無法加入語音頻道（可能為權限或伺服器加密支援問題）。', ephemeral: true });
       }
     }
 
-    // ---- LEAVE ----
+    // LEAVE
     if (interaction.commandName === 'leave') {
       const conn = getVoiceConnection(gid);
       if (conn) conn.destroy();
@@ -184,9 +212,9 @@ client.on('interactionCreate', async (interaction) => {
       return await interaction.reply({ content: '✅ 已離開語音並清空隊列。' });
     }
 
-    // ---- PLAY ----
+    // PLAY
     if (interaction.commandName === 'play') {
-      await interaction.deferReply(); // give more time
+      await interaction.deferReply();
 
       const query = interaction.options.getString('query', true);
       const vc = interaction.member?.voice?.channel;
@@ -211,12 +239,10 @@ client.on('interactionCreate', async (interaction) => {
 
       q.songs.push({ title: info.title || info.video_details?.title || 'Unknown', url });
 
-      // attempt connect (if not connected yet) but do not block user excessively
       try {
         await connectAndPlay(interaction, vc);
       } catch (err) {
         console.error('connectAndPlay 失敗', err);
-        // still proceed to edit reply (we won't crash)
         return await interaction.editReply('❌ 連線語音頻道失敗，請確認權限與頻道。');
       }
 
@@ -225,34 +251,32 @@ client.on('interactionCreate', async (interaction) => {
       return;
     }
 
-    // ---- SKIP ----
+    // SKIP
     if (interaction.commandName === 'skip') {
       const conn = getVoiceConnection(gid);
-      if (!conn) return await interaction.reply({ content: '❗ 機器人不在語音頻道。', flags: InteractionResponseFlags.Ephemeral });
+      if (!conn) return await interaction.reply({ content: '❗ 機器人不在語音頻道。', ephemeral: true });
       q.player.stop(true);
       return await interaction.reply({ content: '⏭ 已跳過目前歌曲。' });
     }
 
-    // ---- STOP ----
+    // STOP
     if (interaction.commandName === 'stop') {
       q.songs = [];
-      try {
-        q.player.stop();
-      } catch (e) {}
+      try { q.player.stop(); } catch (e) {}
       const conn = getVoiceConnection(gid);
       if (conn) conn.destroy();
       queues.delete(gid);
       return await interaction.reply({ content: '⛔ 已停止並清空隊列。' });
     }
 
-    // ---- QUEUE ----
+    // QUEUE
     if (interaction.commandName === 'queue') {
-      if (!q.songs.length) return await interaction.reply({ content: '目前沒有排歌。', flags: InteractionResponseFlags.Ephemeral });
+      if (!q.songs.length) return await interaction.reply({ content: '目前沒有排歌。', ephemeral: true });
       const list = q.songs.slice(0, 20).map((s, i) => `${i + 1}. ${s.title}`).join('\n');
       return await interaction.reply({ content: `🎶 隊列（前20）：\n${list}` });
     }
 
-    // ---- NOW ----
+    // NOW
     if (interaction.commandName === 'now') {
       const playing = q.player.state.status === AudioPlayerStatus.Playing ? '正在播放' : '目前沒有播放';
       const next = q.songs[0] ? `下一首：${q.songs[0].title}` : '沒有下一首';
@@ -262,14 +286,14 @@ client.on('interactionCreate', async (interaction) => {
     console.error('指令處理錯誤', err);
     try {
       if (interaction.deferred) await interaction.editReply('❌ 發生錯誤，請查看伺服器日誌。');
-      else await interaction.reply({ content: '❌ 發生錯誤，請查看伺服器日誌。', flags: InteractionResponseFlags.Ephemeral });
+      else await interaction.reply({ content: '❌ 發生錯誤，請查看伺服器日誌。', ephemeral: true });
     } catch (e) {
       console.error('回覆錯誤時也失敗', e);
     }
   }
 });
 
-// --- ready & register commands ---
+// ready & register
 client.once('ready', () => {
   console.log(`🤖 Logged in as ${client.user.tag}`);
   registerCommands().catch((e) => console.error('registerCommands failed', e));
