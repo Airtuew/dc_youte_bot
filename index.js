@@ -1,4 +1,8 @@
 require('dotenv').config();
+const express = require('express');
+const app = express();
+const port = process.env.PORT || 3000;
+
 const { Client, GatewayIntentBits, REST, Routes, SlashCommandBuilder, InteractionResponseFlags } = require('discord.js');
 const { joinVoiceChannel, createAudioPlayer, createAudioResource, AudioPlayerStatus, getVoiceConnection, entersState, VoiceConnectionStatus } = require('@discordjs/voice');
 const playdl = require('play-dl');
@@ -53,7 +57,6 @@ async function playNext(guildId) {
   }
 }
 
-// 連線語音頻道 + 訂閱 player
 async function connectAndPlay(interaction, voiceChannel) {
   const guildId = interaction.guildId;
   const q = getOrCreateQueue(guildId);
@@ -62,7 +65,7 @@ async function connectAndPlay(interaction, voiceChannel) {
     channelId: voiceChannel.id,
     guildId: voiceChannel.guild.id,
     adapterCreator: voiceChannel.guild.voiceAdapterCreator,
-    selfDeaf: false, // ✅ 防止加密模式錯誤
+    selfDeaf: false,
     selfMute: false
   });
 
@@ -76,7 +79,6 @@ async function connectAndPlay(interaction, voiceChannel) {
   connection.subscribe(q.player);
 }
 
-// Slash commands
 const commands = [
   new SlashCommandBuilder().setName('join').setDescription('讓機器人加入你的語音頻道'),
   new SlashCommandBuilder().setName('leave').setDescription('讓機器人離開語音頻道'),
@@ -87,7 +89,6 @@ const commands = [
   new SlashCommandBuilder().setName('now').setDescription('顯示現在正在播放的歌')
 ].map(cmd => cmd.toJSON());
 
-// 註冊 slash 指令
 async function registerCommands() {
   const rest = new REST({ version: '10' }).setToken(token);
   try {
@@ -103,7 +104,6 @@ async function registerCommands() {
   }
 }
 
-// 處理互動
 client.on('interactionCreate', async (interaction) => {
   if (!interaction.isCommand()) return;
 
@@ -208,3 +208,7 @@ client.once('ready', async () => {
 });
 
 client.login(token);
+
+// ------------------- Express 保活 -------------------
+app.get('/', (req, res) => res.send('Bot is running!'));
+app.listen(port, () => console.log(`Express server listening on port ${port}`));
