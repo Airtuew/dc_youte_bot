@@ -1,72 +1,106 @@
-require('dotenv').config();
-const express = require('express');
-const app = express();
-const port = process.env.PORT || 3000;
-
-const { Client, GatewayIntentBits, REST, Routes, SlashCommandBuilder, InteractionResponseFlags } = require('discord.js');
-const { joinVoiceChannel, createAudioPlayer, createAudioResource, AudioPlayerStatus, getVoiceConnection, entersState, VoiceConnectionStatus } = require('@discordjs/voice');
-const playdl = require('play-dl');
+require("dotenv").config();
+const express = require("express");
+const {
+  Client,
+  GatewayIntentBits,
+  REST,
+  Routes,
+  SlashCommandBuilder,
+  InteractionResponseFlags
+} = require("discord.js");
+const {
+  joinVoiceChannel,
+  createAudioPlayer,
+  createAudioResource,
+  AudioPlayerStatus,
+  getVoiceConnection,
+  entersState,
+  VoiceConnectionStatus
+} = require("@discordjs/voice");
+const playdl = require("play-dl");
 
 const token = process.env.DISCORD_TOKEN;
 const clientId = process.env.CLIENT_ID;
 const guildId = process.env.GUILD_ID || null;
 
 if (!token || !clientId) {
-  console.error('請在 .env 裡設定 DISCORD_TOKEN 與 CLIENT_ID');
+  console.error("❌ 請在 .env 內設定 DISCORD_TOKEN 與 CLIENT_ID");
   process.exit(1);
 }
 
+// =========================
+// Express Keep Alive (Render)
+// =========================
+const app = express();
+app.get("/", (req, res) => res.send("Bot is running."));
+app.listen(process.env.PORT || 3000, () => {
+  console.log("🌐 Express keep alive enabled");
+});
+
+// =========================
+// Discord Client
+// =========================
 const client = new Client({
-  intents: [ GatewayIntentBits.Guilds, GatewayIntentBits.GuildVoiceStates ]
+  intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildVoiceStates]
 });
 
 const queues = new Map();
-
-function getOrCreateQueue(guildId) {
-  if (!queues.has(guildId)) {
-    queues.set(guildId, {
+function getOrCreateQueue(gid) {
+  if (!queues.has(gid)) {
+    queues.set(gid, {
       songs: [],
       player: createAudioPlayer(),
       playing: false
     });
   }
-  return queues.get(guildId);
+  return queues.get(gid);
 }
 
-async function playNext(guildId) {
-  const q = queues.get(guildId);
-  if (!q) return;
-  if (q.songs.length === 0) {
+// =========================
+// Play Next Song
+// =========================
+async function playNext(gid) {
+  const q = queues.get(gid);
+  if (!q || q.songs.length === 0) {
     q.playing = false;
-    const conn = getVoiceConnection(guildId);
+    const conn = getVoiceConnection(gid);
     if (conn) conn.destroy();
     return;
   }
 
   const track = q.songs.shift();
   try {
-    const streamInfo = await playdl.stream(track.url, { quality: 2 });
-    const resource = createAudioResource(streamInfo.stream, { inputType: streamInfo.type });
+    const stream = await playdl.stream(track.url, { quality: 2 });
+    const resource = createAudioResource(stream.stream, {
+      inputType: stream.type
+    });
     q.player.play(resource);
     q.playing = true;
 
-    q.player.once(AudioPlayerStatus.Idle, () => playNext(guildId));
-  } catch (err) {
-    console.error('播放錯誤', err);
-    playNext(guildId);
+    q.player.once(AudioPlayerStatus.Idle, () => playNext(gid));
+  } catch (e) {
+    console.error("播放錯誤", e);
+    playNext(gid);
   }
 }
 
+// =========================
+// Connect to Voice (Encryption FIX)
+// =========================
 async function connectAndPlay(interaction, voiceChannel) {
-  const guildId = interaction.guildId;
-  const q = getOrCreateQueue(guildId);
+  const gid = interaction.guildId;
+  const q = getOrCreateQueue(gid);
+
+  const encryptionMode =
+    ["aead_xchacha20_poly1305_rtpsize", "aead_aes256_gcm_rtpsize"][0];
 
   const connection = joinVoiceChannel({
     channelId: voiceChannel.id,
     guildId: voiceChannel.guild.id,
     adapterCreator: voiceChannel.guild.voiceAdapterCreator,
     selfDeaf: false,
-    selfMute: false
+    selfMute: false,
+    encryption: { mode: encryptionMode }
   });
 
   try {
@@ -79,136 +113,176 @@ async function connectAndPlay(interaction, voiceChannel) {
   connection.subscribe(q.player);
 }
 
+// =========================
+// Slash Commands
+// =========================
 const commands = [
-  new SlashCommandBuilder().setName('join').setDescription('讓機器人加入你的語音頻道'),
-  new SlashCommandBuilder().setName('leave').setDescription('讓機器人離開語音頻道'),
-  new SlashCommandBuilder().setName('play').setDescription('播放 YouTube 音樂').addStringOption(opt => opt.setName('url').setDescription('YouTube 連結或關鍵字').setRequired(true)),
-  new SlashCommandBuilder().setName('skip').setDescription('跳過目前歌曲'),
-  new SlashCommandBuilder().setName('stop').setDescription('停止並清空隊列'),
-  new SlashCommandBuilder().setName('queue').setDescription('顯示隊列'),
-  new SlashCommandBuilder().setName('now').setDescription('顯示現在正在播放的歌')
-].map(cmd => cmd.toJSON());
+  new SlashCommandBuilder().setName("join").setDescription("讓機器人加入語音頻道"),
+  new SlashCommandBuilder()
+    .setName("leave")
+    .setDescription("讓機器人離開語音頻道"),
+  new SlashCommandBuilder()
+    .setName("play")
+    .setDescription("播放 YouTube 音樂")
+    .addStringOption(opt =>
+      opt.setName("url").setDescription("YouTube 連結或搜尋字").setRequired(true)
+    ),
+  new SlashCommandBuilder().setName("skip").setDescription("跳過歌曲"),
+  new SlashCommandBuilder().setName("stop").setDescription("停止音樂並清空隊列"),
+  new SlashCommandBuilder().setName("queue").setDescription("顯示隊列"),
+  new SlashCommandBuilder().setName("now").setDescription("顯示目前播放")
+].map(c => c.toJSON());
 
 async function registerCommands() {
-  const rest = new REST({ version: '10' }).setToken(token);
-  try {
-    if (guildId) {
-      await rest.put(Routes.applicationGuildCommands(clientId, guildId), { body: commands });
-      console.log('已在指定伺服器註冊指令');
-    } else {
-      await rest.put(Routes.applicationCommands(clientId), { body: commands });
-      console.log('已全域註冊指令（生效可能需要幾分鐘）');
-    }
-  } catch (err) {
-    console.error('註冊指令失敗', err);
+  const rest = new REST({ version: "10" }).setToken(token);
+  if (guildId) {
+    await rest.put(Routes.applicationGuildCommands(clientId, guildId), {
+      body: commands
+    });
+    console.log("✔ 指令已註冊到伺服器");
+  } else {
+    await rest.put(Routes.applicationCommands(clientId), { body: commands });
+    console.log("✔ 全域 Slash 指令已註冊");
   }
 }
 
-client.on('interactionCreate', async (interaction) => {
+// =========================
+// Command Handler
+// =========================
+client.on("interactionCreate", async interaction => {
   if (!interaction.isCommand()) return;
 
-  const guildId = interaction.guildId;
-  const q = getOrCreateQueue(guildId);
+  const gid = interaction.guildId;
+  const q = getOrCreateQueue(gid);
 
   try {
-    if (interaction.commandName === 'join') {
-      const voiceChannel = interaction.member.voice.channel;
-      if (!voiceChannel) return interaction.reply({ content: '你必須先加入語音頻道。', flags: InteractionResponseFlags.Ephemeral });
-      await connectAndPlay(interaction, voiceChannel);
-      return interaction.reply({ content: '已加入語音頻道。', flags: InteractionResponseFlags.Ephemeral });
+    // JOIN
+    if (interaction.commandName === "join") {
+      const vc = interaction.member.voice.channel;
+      if (!vc)
+        return interaction.reply({
+          content: "請先加入語音頻道",
+          flags: InteractionResponseFlags.Ephemeral
+        });
+
+      await connectAndPlay(interaction, vc);
+      return interaction.reply("已加入語音頻道 ✔");
     }
 
-    if (interaction.commandName === 'leave') {
-      const conn = getVoiceConnection(guildId);
+    // LEAVE
+    if (interaction.commandName === "leave") {
+      const conn = getVoiceConnection(gid);
       if (conn) conn.destroy();
-      queues.delete(guildId);
-      return interaction.reply({ content: '已離開語音頻道並清空隊列。', flags: InteractionResponseFlags.Ephemeral });
+      queues.delete(gid);
+      return interaction.reply("已離開語音並清空隊列");
     }
 
-    if (interaction.commandName === 'play') {
+    // PLAY
+    if (interaction.commandName === "play") {
       await interaction.deferReply();
-      const query = interaction.options.getString('url', true);
-      const voiceChannel = interaction.member.voice.channel;
-      if (!voiceChannel) return interaction.editReply('你必須先加入語音頻道。');
 
-      let url = query;
+      const query = interaction.options.getString("url", true);
+      const vc = interaction.member.voice.channel;
+      if (!vc) return interaction.editReply("請先加入語音頻道");
+
       let info;
+      let url = query;
+
       try {
         if (!playdl.yt_validate(query)) {
           const results = await playdl.search(query, { limit: 1 });
-          if (results.length === 0) return interaction.editReply('找不到結果。');
+          if (!results.length)
+            return interaction.editReply("找不到任何結果");
           url = results[0].url;
           info = results[0];
         } else {
           info = await playdl.video_info(query);
         }
-      } catch (err) {
-        console.error('搜尋或取得影片資訊錯誤', err);
-        return interaction.editReply('無法取得影片資訊。');
+      } catch (e) {
+        console.error(e);
+        return interaction.editReply("無法取得影片資訊");
       }
 
       q.songs.push({
-        title: info.title || (info.video_details && info.video_details.title) || 'Unknown',
-        url: url
+        title: info.title || info.video_details?.title || "Unknown",
+        url
       });
 
-      try {
-        await connectAndPlay(interaction, voiceChannel);
-      } catch (err) {
-        console.error('連線語音錯誤', err);
-        return interaction.editReply('連線語音頻道失敗。');
-      }
+      await connectAndPlay(interaction, vc);
 
-      interaction.editReply(`已加入隊列：**${q.songs[q.songs.length-1].title}**`);
-      if (!q.playing) playNext(guildId);
+      interaction.editReply(`🎵 已加入隊列：**${q.songs[q.songs.length - 1].title}**`);
+
+      if (!q.playing) playNext(gid);
       return;
     }
 
-    if (interaction.commandName === 'skip') {
-      const conn = getVoiceConnection(guildId);
-      if (!conn) return interaction.reply({ content: '機器人不在語音頻道。', flags: InteractionResponseFlags.Ephemeral });
+    // SKIP
+    if (interaction.commandName === "skip") {
+      const conn = getVoiceConnection(gid);
+      if (!conn)
+        return interaction.reply({
+          content: "機器人不在語音頻道",
+          flags: InteractionResponseFlags.Ephemeral
+        });
+
       q.player.stop();
-      return interaction.reply({ content: '已跳過目前歌曲。', flags: InteractionResponseFlags.Ephemeral });
+      return interaction.reply("⏭ 已跳過");
     }
 
-    if (interaction.commandName === 'stop') {
+    // STOP
+    if (interaction.commandName === "stop") {
       q.songs = [];
       q.player.stop();
-      const conn = getVoiceConnection(guildId);
+      const conn = getVoiceConnection(gid);
       if (conn) conn.destroy();
-      queues.delete(guildId);
-      return interaction.reply({ content: '已停止並清空隊列。', flags: InteractionResponseFlags.Ephemeral });
+      queues.delete(gid);
+      return interaction.reply("⛔ 已停止並離開語音");
     }
 
-    if (interaction.commandName === 'queue') {
-      if (!q.songs.length) return interaction.reply({ content: '目前隊列為空。', flags: InteractionResponseFlags.Ephemeral });
-      const list = q.songs.slice(0, 10).map((s, i) => `${i+1}. ${s.title}`).join('\n');
-      return interaction.reply({ content: `目前隊列（前10首）：\n${list}` });
+    // QUEUE
+    if (interaction.commandName === "queue") {
+      if (!q.songs.length)
+        return interaction.reply({
+          content: "目前沒有排歌",
+          flags: InteractionResponseFlags.Ephemeral
+        });
+
+      const list = q.songs
+        .slice(0, 10)
+        .map((x, i) => `${i + 1}. ${x.title}`)
+        .join("\n");
+
+      return interaction.reply(`🎶 **隊列（前10首）**\n${list}`);
     }
 
-    if (interaction.commandName === 'now') {
-      const current = q.player.state.status === AudioPlayerStatus.Playing ? '正在播放' : '目前無播放';
-      const nextTitle = q.songs[0] ? `下一首：${q.songs[0].title}` : '隊列沒有下一首';
-      return interaction.reply({ content: `${current}\n${nextTitle}` });
-    }
+    // NOW PLAYING
+    if (interaction.commandName === "now") {
+      const status =
+        q.player.state.status === AudioPlayerStatus.Playing
+          ? "正在播放中"
+          : "目前沒有播放";
+      const next = q.songs[0] ? `下一首：${q.songs[0].title}` : "沒有下一首";
 
-  } catch (err) {
-    console.error('指令處理錯誤', err);
-    if (interaction.deferred || interaction.replied) {
-      interaction.editReply('發生錯誤，請查看機器人日誌。');
-    } else {
-      interaction.reply({ content: '發生錯誤，請查看機器人日誌。', flags: InteractionResponseFlags.Ephemeral });
+      return interaction.reply(`🎧 ${status}\n${next}`);
     }
+  } catch (e) {
+    console.error("指令處理錯誤", e);
+    if (interaction.deferred)
+      interaction.editReply("❌ 發生錯誤，請查看 logs");
+    else
+      interaction.reply({
+        content: "❌ 發生錯誤，請查看 logs",
+        flags: InteractionResponseFlags.Ephemeral
+      });
   }
 });
 
-client.once('ready', async () => {
-  console.log(`Logged in as ${client.user.tag}`);
-  await registerCommands();
+// =========================
+// Bot Ready
+// =========================
+client.once("ready", () => {
+  console.log(`🤖 Logged in as ${client.user.tag}`);
+  registerCommands();
 });
 
 client.login(token);
-
-// ------------------- Express 保活 -------------------
-app.get('/', (req, res) => res.send('Bot is running!'));
-app.listen(port, () => console.log(`Express server listening on port ${port}`));
