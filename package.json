@@ -1,19 +1,15 @@
 {
-  "name": "discord-music-bot",
+  "name": "discord-role-bot",
   "version": "1.0.0",
+  "description": "Discord 按鈕身份組機器人 (Render 可用)",
   "main": "index.js",
+  "type": "module",
   "scripts": {
     "start": "node index.js"
   },
-  "engines": {
-    "node": "20.x"
-  },
   "dependencies": {
     "discord.js": "^14.14.1",
-    "@discordjs/voice": "^0.16.1",
-    "play-dl": "^1.9.7",
     "dotenv": "^16.4.5",
-    "express": "^4.18.2",
-    "sodium-plus": "^0.8.0"
+    "express": "^4.18.2"
   }
 }
